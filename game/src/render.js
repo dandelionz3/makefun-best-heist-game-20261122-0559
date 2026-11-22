@@ -58,13 +58,25 @@ export function createRenderer(canvas) {
     context.fillText(value, x, y);
   }
 
-  function drawCone(x, y, facing, range, halfAngle, fill) {
+  // The cone's edge is stroked harder than its fill: the line is the rule a
+  // player plans around, so it must read as a line, not a haze.
+  function drawCone(x, y, facing, range, halfAngle, fill, edge) {
     context.fillStyle = fill;
     context.beginPath();
     context.moveTo(x, y);
     context.arc(x, y, range, facing - halfAngle, facing + halfAngle);
     context.closePath();
     context.fill();
+    context.strokeStyle = edge;
+    context.lineWidth = 2;
+    context.beginPath();
+    context.moveTo(x + Math.cos(facing - halfAngle) * range, y + Math.sin(facing - halfAngle) * range);
+    context.lineTo(x, y);
+    context.lineTo(x + Math.cos(facing + halfAngle) * range, y + Math.sin(facing + halfAngle) * range);
+    context.stroke();
+    context.beginPath();
+    context.arc(x, y, range, facing - halfAngle, facing + halfAngle);
+    context.stroke();
   }
 
   function drawRoom(state) {
@@ -171,19 +183,39 @@ export function createRenderer(canvas) {
       context.closePath();
       context.fill();
       context.restore();
-      text('MERIDIAN DIAMOND', state.diamond.x, state.diamond.y + 34, 13, PALETTE.lootDiamond, 'center');
+      // A dark pill behind the name, so it reads over the vault gold and the
+      // thief standing under it instead of dissolving into them.
+      const label = 'MERIDIAN DIAMOND';
+      context.font = `13px ${FONT}`;
+      const labelWidth = context.measureText(label).width;
+      context.fillStyle = 'rgba(8, 10, 15, 0.65)';
+      context.fillRect(state.diamond.x - labelWidth / 2 - 10, state.diamond.y + 17, labelWidth + 20, 22);
+      text(label, state.diamond.x, state.diamond.y + 34, 13, PALETTE.lootDiamond, 'center');
     }
   }
 
   function drawCones(state) {
+    const camerasDark = state.cameraOffUntil > state.elapsed;
     for (const guard of state.guards) {
       let fill = PALETTE.coneCalm;
-      if (guard.state === GUARD_ALERT) fill = PALETTE.coneAlert;
-      else if (guard.suspicion > 0.25) fill = PALETTE.coneWary;
-      drawCone(guard.x, guard.y, guard.facing, GUARD.visionRange, GUARD.visionHalfAngle, fill);
+      let edge = PALETTE.coneCalmEdge;
+      if (guard.state === GUARD_ALERT) {
+        fill = PALETTE.coneAlert;
+        edge = PALETTE.coneAlertEdge;
+      } else if (guard.suspicion > 0.25) {
+        fill = PALETTE.coneWary;
+        edge = PALETTE.coneWaryEdge;
+      }
+      drawCone(guard.x, guard.y, guard.facing, GUARD.visionRange, GUARD.visionHalfAngle, fill, edge);
     }
     for (const camera of state.cameras) {
-      drawCone(camera.x, camera.y, camera.angle, CAMERA.visionRange, CAMERA.visionHalfAngle, camera.sees ? PALETTE.coneAlert : PALETTE.camCone);
+      // A dark camera shows a dead grey cone, never a live blue one: the player
+      // must be able to trust that "cameras dark" means the sweep is off.
+      if (camerasDark) {
+        drawCone(camera.x, camera.y, camera.angle, CAMERA.visionRange, CAMERA.visionHalfAngle, PALETTE.coneDark, PALETTE.coneDarkEdge);
+      } else {
+        drawCone(camera.x, camera.y, camera.angle, CAMERA.visionRange, CAMERA.visionHalfAngle, camera.sees ? PALETTE.coneAlert : PALETTE.camCone, camera.sees ? PALETTE.coneAlertEdge : PALETTE.camConeEdge);
+      }
     }
   }
 
@@ -202,22 +234,34 @@ export function createRenderer(canvas) {
       context.arc(ping.x, ping.y, 4, 0, Math.PI * 2);
       context.fill();
     }
-    // Cameras on their wall mounts.
+    // Cameras on their wall mounts; a dark camera's eye goes grey with its cone.
+    const camerasDark = state.cameraOffUntil > state.elapsed;
     for (const camera of state.cameras) {
       context.fillStyle = '#39415a';
       context.beginPath();
       context.arc(camera.x, camera.y, 9, 0, Math.PI * 2);
       context.fill();
-      context.fillStyle = camera.sees ? PALETTE.alarmHigh : '#7fe3f0';
+      context.fillStyle = camerasDark ? '#6a7280' : camera.sees ? PALETTE.alarmHigh : '#7fe3f0';
       context.beginPath();
       context.arc(camera.x, camera.y, 4, 0, Math.PI * 2);
       context.fill();
     }
     // Guards: dark coats, pale collars, and a suspicion ring that fills as they notice you.
+    // A pale outline ring keeps a guard readable against the floor — and keeps a
+    // guard from ever being mistaken for the thief.
     for (const guard of state.guards) {
       context.fillStyle = PALETTE.guard;
       context.beginPath();
       context.arc(guard.x, guard.y, GUARD.radius, 0, Math.PI * 2);
+      context.fill();
+      context.strokeStyle = PALETTE.guardTrim;
+      context.lineWidth = 2;
+      context.beginPath();
+      context.arc(guard.x, guard.y, GUARD.radius, 0, Math.PI * 2);
+      context.stroke();
+      context.fillStyle = '#eef1f5';
+      context.beginPath();
+      context.arc(guard.x + Math.cos(guard.facing) * 5, guard.y + Math.sin(guard.facing) * 5, 3, 0, Math.PI * 2);
       context.fill();
       context.strokeStyle = PALETTE.guardTrim;
       context.lineWidth = 2;
@@ -236,7 +280,9 @@ export function createRenderer(canvas) {
         text('!', guard.x, guard.y - GUARD.radius - 8, 20, PALETTE.alarmHigh, 'center');
       }
     }
-    // The thief: black coat, red scarf, quiet feet.
+    // The thief: black coat, red scarf, quiet feet — and a bright gold ring, so
+    // the player can always find themselves at a glance on a dark floor. The ring
+    // stays full-strength while sneaking; only the coat fades.
     const player = state.player;
     if (state.smokeUntil > state.elapsed) {
       context.fillStyle = 'rgba(200, 204, 214, 0.35)';
@@ -259,6 +305,11 @@ export function createRenderer(canvas) {
     context.arc(player.x + Math.cos(player.facing) * 5, player.y + Math.sin(player.facing) * 5, 3, 0, Math.PI * 2);
     context.fill();
     context.globalAlpha = 1;
+    context.strokeStyle = PALETTE.lootGold;
+    context.lineWidth = 2;
+    context.beginPath();
+    context.arc(player.x, player.y, PLAYER.radius + 3, 0, Math.PI * 2);
+    context.stroke();
     // Hack progress ring on the panel.
     if (state.hackProgress > 0) {
       context.strokeStyle = '#7fe3f0';
@@ -271,6 +322,10 @@ export function createRenderer(canvas) {
 
   function drawHud(state, screen) {
     context.textBaseline = 'top';
+    // A dark shelf across the top: the vault alcove is gold, the floor is dark,
+    // and grey HUD text must read over either one.
+    context.fillStyle = 'rgba(8, 10, 15, 0.55)';
+    context.fillRect(0, 0, FIELD.width, 66);
     // Job name and score, top left.
     text(state.level.name, 24, 18, 19, PALETTE.text, 'left');
     text(scoreLabel(state.score), 24, 42, 26, PALETTE.lootGold, 'left');
@@ -293,10 +348,16 @@ export function createRenderer(canvas) {
     const tools = `COINS ${state.coins}   EMP $${TOOLS.empCost} [Q]   SMOKE ${state.smokes} [R]`;
     text(tools, FIELD.width - 24, 18, 17, PALETTE.muted, 'right');
     const lootLeft = state.loot.filter((l) => !l.taken).length + (state.diamond.taken ? 0 : 1);
-    text(`LOOT LEFT ${lootLeft}`, FIELD.width - 24, 42, 17, PALETTE.muted, 'right');
-    // The banner: what just happened.
+    const minutes = Math.floor(state.levelElapsed / 60);
+    const seconds = Math.floor(state.levelElapsed % 60).toString().padStart(2, '0');
+    text(`LOOT LEFT ${lootLeft}   TIME ${minutes}:${seconds}`, FIELD.width - 24, 42, 17, PALETTE.muted, 'right');
+    // The banner: what just happened — on its own dark pill, so it reads over rugs and loot alike.
     if (state.banner) {
       context.textBaseline = 'alphabetic';
+      context.font = `22px ${FONT}`;
+      const bannerWidth = context.measureText(state.banner).width;
+      context.fillStyle = 'rgba(8, 10, 15, 0.6)';
+      context.fillRect(FIELD.width / 2 - bannerWidth / 2 - 14, 66, bannerWidth + 28, 34);
       text(state.banner, FIELD.width / 2, 92, 22, PALETTE.lootGold, 'center');
       context.textBaseline = 'top';
     }
@@ -332,17 +393,69 @@ export function createRenderer(canvas) {
     text(prompt, FIELD.width / 2, y + height - 38, 23, PALETTE.lootGold, 'center');
   }
 
+  // Floating score popups, kept here in the renderer so the world's rules stay
+  // untouched: a grab shows +$100 where it happened, an EMP shows -$150. Only
+  // single-event deltas spawn one — a restart's whole-score drop is not a popup.
+  let lastScore = null;
+  const popups = [];
+
+  function drawPopups(state) {
+    if (lastScore === null) {
+      lastScore = state.score;
+      return;
+    }
+    const delta = state.score - lastScore;
+    lastScore = state.score;
+    if (delta !== 0 && delta >= -200 && delta <= 550) {
+      popups.push({
+        x: state.player.x,
+        y: state.player.y - 24,
+        text: `${delta > 0 ? '+' : '−'}$${Math.abs(delta)}`,
+        at: state.elapsed,
+        good: delta > 0,
+      });
+    }
+    for (let i = popups.length - 1; i >= 0; i -= 1) {
+      const age = state.elapsed - popups[i].at;
+      if (age < 0 || age > 1.2) popups.splice(i, 1);
+    }
+    for (const popup of popups) {
+      const age = state.elapsed - popup.at;
+      context.globalAlpha = Math.max(0, 1 - age / 1.2);
+      context.font = `bold 20px ${FONT}`;
+      context.fillStyle = popup.good ? PALETTE.lootGold : PALETTE.alarmHigh;
+      context.textAlign = 'center';
+      context.fillText(popup.text, popup.x, popup.y - age * 30);
+    }
+    context.globalAlpha = 1;
+  }
+
   /** Paint one frame: the room, then the HUD or a panel for the screen the game is on. */
   function draw(state, screen, best) {
     context.setTransform(1, 0, 0, 1, 0, 0);
     context.fillStyle = PALETTE.backdrop;
     context.fillRect(0, 0, canvas.width, canvas.height);
-    context.setTransform(view.scale, 0, 0, view.scale, view.x, view.y);
+    // A chase shakes the frame: a small deterministic shudder while a guard is
+    // on your tail or the alarm is nearly full. Driven by elapsed time, so a
+    // staged frame always shakes the same way.
+    const anyAlert = state.guards.some((g) => g.state === GUARD_ALERT);
+    const tense = anyAlert || state.alarm >= 75;
+    const shakeX = tense ? Math.sin(state.elapsed * 47) * 3 * view.scale : 0;
+    const shakeY = tense ? Math.cos(state.elapsed * 39) * 3 * view.scale : 0;
+    context.setTransform(view.scale, 0, 0, view.scale, view.x + shakeX, view.y + shakeY);
     drawRoom(state);
     drawCones(state);
     drawLoot(state);
     drawCover(state);
     drawActors(state);
+    drawPopups(state);
+    // The alarm burning at the frame's edge: the room itself tells you the
+    // lockdown is close, before the meter does.
+    if (state.alarm >= 60) {
+      context.strokeStyle = `rgba(229, 83, 75, ${((state.alarm - 60) / 40) * 0.55})`;
+      context.lineWidth = 5;
+      context.strokeRect(2.5, 2.5, FIELD.width - 5, FIELD.height - 5);
+    }
     if (screen === SCREEN_TITLE) {
       drawPanel('THE MERIDIAN JOB', [
         'Three rooms. One diamond. No alarms.',
